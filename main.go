@@ -1,8 +1,9 @@
 package main
 
 import (
-	"fakeregistry/registry"
 	"net/http"
+
+	"github.com/ricardomaraschini/image-registry-api/registry"
 )
 
 func main() {

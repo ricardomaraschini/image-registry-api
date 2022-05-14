@@ -1,15 +1,19 @@
 package main
 
 import (
-	"fakeregistry/registry"
+	"context"
 	"strings"
+
+	"github.com/ricardomaraschini/image-registry-api/registry"
 )
 
 // Authorizer is our example implementation of an authentication mechanism.
 type Authorizer struct{}
 
 // Authenticate authenticates an user using provided Request. Returns a token or an error.
-func (a *Authorizer) Authenticate(request registry.Request) (string, *registry.Error) {
+func (a *Authorizer) Authenticate(
+	ctx context.Context, request registry.Request,
+) (string, *registry.Error) {
 	// the scope of the access can be obtained by calling:
 	// scope, err := request.AccessScope()
 
@@ -21,7 +25,7 @@ func (a *Authorizer) Authenticate(request registry.Request) (string, *registry.E
 }
 
 // Authorize validates the token present in the request.
-func (a *Authorizer) Authorize(request registry.Request) *registry.Error {
+func (a *Authorizer) Authorize(ctx context.Context, request registry.Request) *registry.Error {
 	authorization := request.Header.Get("authorization")
 	token := strings.TrimPrefix(authorization, "Bearer ")
 	if token == "token123" {

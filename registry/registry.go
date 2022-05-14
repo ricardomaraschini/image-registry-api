@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,8 +14,8 @@ import (
 // or and Error while Authorize validates the token and returns an error if invalid or nil if
 // the token is valid.
 type Authorizer interface {
-	Authenticate(Request) (string, *Error)
-	Authorize(Request) *Error
+	Authenticate(context.Context, Request) (string, *Error)
+	Authorize(context.Context, Request) *Error
 }
 
 // Registry is our middleware to access the backend registry. This object implements an http
@@ -32,7 +33,7 @@ type Registry struct {
 // present this function replies requests with unauthorized.
 func (r *Registry) redirectToAuth(resp http.ResponseWriter, request Request) {
 	resp.Header().Add("docker-distribution-api-version", "registry/2.0")
-	if err := r.authzer.Authorize(request); err == nil {
+	if err := r.authzer.Authorize(request.Context(), request); err == nil {
 		resp.WriteHeader(http.StatusOK)
 		return
 	}
@@ -48,7 +49,7 @@ func (r *Registry) authenticate(resp http.ResponseWriter, request Request) {
 	resp.Header().Add("docker-distribution-api-version", "registry/2.0")
 	resp.Header().Add("content-type", "application/json")
 
-	token, err := r.authzer.Authenticate(request)
+	token, err := r.authzer.Authenticate(request.Context(), request)
 	if err != nil {
 		err.Write(resp)
 		return
@@ -72,7 +73,7 @@ func (r *Registry) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		r.authenticate(resp, request)
 		return
 	}
-	if err := r.authzer.Authorize(request); err != nil {
+	if err := r.authzer.Authorize(request.Context(), request); err != nil {
 		err.Write(resp)
 		return
 	}
