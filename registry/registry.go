@@ -29,14 +29,13 @@ type EventHandler interface {
 // Handler and dispatches all received requests directly to our backend registry. This entity
 // also manages users authentication.
 type Registry struct {
-	externaladdr string
-	blobhdr      *BlobHandler
-	manfhdr      *ManifestHandler
-	authzer      Authorizer
-	certpath     string
-	keypath      string
-	bind         string
-	evthandler   EventHandler
+	blobhdr    *BlobHandler
+	manfhdr    *ManifestHandler
+	authzer    Authorizer
+	certpath   string
+	keypath    string
+	bind       string
+	evthandler EventHandler
 }
 
 // redirectToAuth redirect the client do the authentication endpoint by means of setting the
@@ -49,8 +48,8 @@ func (r *Registry) redirectToAuth(resp http.ResponseWriter, request Request) {
 		return
 	}
 
-	realm := fmt.Sprintf("https://%s/v2/auth", r.externaladdr)
-	authdr := fmt.Sprintf("bearer realm=\"%s\",service=\"%s\"", realm, r.externaladdr)
+	realm := fmt.Sprintf("https://%s/v2/auth", request.Host)
+	authdr := fmt.Sprintf("bearer realm=\"%s\",service=\"%s\"", realm, request.Host)
 	resp.Header().Add("www-authenticate", authdr)
 	resp.WriteHeader(http.StatusUnauthorized)
 }
@@ -136,13 +135,12 @@ func (r *Registry) Start(ctx context.Context) error {
 func New(auth Authorizer, opts ...Option) *Registry {
 	sthandler := NewStorageHandler()
 	registry := &Registry{
-		bind:         ":8080",
-		externaladdr: "localhost:8080",
-		certpath:     "certs/server.crt",
-		keypath:      "certs/server.key",
-		blobhdr:      NewBlobHandler(sthandler),
-		manfhdr:      NewManifestHandler(sthandler),
-		authzer:      auth,
+		bind:     ":8080",
+		certpath: "certs/server.crt",
+		keypath:  "certs/server.key",
+		blobhdr:  NewBlobHandler(sthandler),
+		manfhdr:  NewManifestHandler(sthandler),
+		authzer:  auth,
 	}
 
 	for _, opt := range opts {

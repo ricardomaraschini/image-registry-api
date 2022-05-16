@@ -72,7 +72,9 @@ func (m *ManifestHandler) StoreManifest(resp http.ResponseWriter, request Reques
 			return
 		}
 	}
+
 	klog.Infof("new manifest tag upload %s/%s:%s", repo, image, manid)
+	resp.Header().Set("docker-content-digest", hash)
 	resp.WriteHeader(http.StatusCreated)
 }
 

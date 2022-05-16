@@ -24,10 +24,7 @@ func main() {
 	}()
 
 	authzer := &Authorizer{}
-	reghandler := registry.New(
-		authzer,
-		registry.WithEventHandler(ev{}),
-	)
+	reghandler := registry.New(authzer, registry.WithEventHandler(ev{}))
 
 	if err := reghandler.Start(ctx); err != nil {
 		panic(err)
