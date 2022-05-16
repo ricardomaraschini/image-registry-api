@@ -1,5 +1,0 @@
-[allowlist]
-  description = "development self signed key"
-  paths = [
-    "certs/server.key"
-  ]
