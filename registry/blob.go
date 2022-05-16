@@ -30,6 +30,7 @@ type BlobHandler struct {
 func (b *BlobHandler) Stat(resp http.ResponseWriter, request Request) {
 	repo, img, err := request.RepositoryAndImage()
 	if err != nil {
+		klog.Errorf("error fetching repo/image: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -37,6 +38,7 @@ func (b *BlobHandler) Stat(resp http.ResponseWriter, request Request) {
 	hash := request.BlobHash()
 	size, err := b.storage.StatBlob(repo, img, hash)
 	if err != nil && !os.IsNotExist(err) {
+		klog.Errorf("unable to stat blob: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -57,6 +59,7 @@ func (b *BlobHandler) Stat(resp http.ResponseWriter, request Request) {
 func (b *BlobHandler) StartBlobUpload(resp http.ResponseWriter, request Request) {
 	repo, img, err := request.RepositoryAndImage()
 	if err != nil {
+		klog.Errorf("error parsing image/repo for upload: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -73,6 +76,7 @@ func (b *BlobHandler) Get(resp http.ResponseWriter, request Request) {
 	hash := request.BlobHash()
 	repo, image, err := request.RepositoryAndImage()
 	if err != nil {
+		klog.Errorf("unable to parse repo/image: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -83,6 +87,7 @@ func (b *BlobHandler) Get(resp http.ResponseWriter, request Request) {
 			ErrUnknownBlob.Write(resp)
 			return
 		}
+		klog.Errorf("unable to get blob: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -94,18 +99,33 @@ func (b *BlobHandler) Get(resp http.ResponseWriter, request Request) {
 	}
 }
 
-// StoreBlob stores the blob in our storage. This function is called when there is something
-// being uploaded by the client. We expect to find a valid 'id' in the url.
-func (b *BlobHandler) StoreBlob(resp http.ResponseWriter, request Request) {
+// UploadBlob manages blob upload requests. This function is called when there is something
+// being uploaded by the client. We expect to find a valid upload 'id' in the url.
+func (b *BlobHandler) UploadBlob(resp http.ResponseWriter, request Request) {
 	id := request.UploadID()
+	if len(id) == 0 {
+		err := fmt.Errorf("empty upload id")
+		klog.Errorf("invalid request: %s", err)
+		ErrInternal(err).Write(resp)
+		return
+	}
+
 	repo, img, err := request.RepositoryAndImage()
 	if err != nil {
+		klog.Errorf("unable to parse repo/image: %s", err)
 		ErrInternal(err).Write(resp)
+		return
+	}
+
+	if request.IsDelete() {
+		b.upload.Delete(id)
+		resp.WriteHeader(http.StatusOK)
 		return
 	}
 
 	written, err := b.upload.Append(id, request.Body)
 	if err != nil {
+		klog.Errorf("error append to upload file: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -123,6 +143,7 @@ func (b *BlobHandler) StoreBlob(resp http.ResponseWriter, request Request) {
 
 	fp, err := b.upload.End(id)
 	if err != nil {
+		klog.Errorf("unable to commit uploaded file: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -130,14 +151,17 @@ func (b *BlobHandler) StoreBlob(resp http.ResponseWriter, request Request) {
 
 	expdgst := request.Get("digest")
 	if expdgst == "" {
-		err := fmt.Errorf("unexpected empty blob digest")
+		err := fmt.Errorf("empty digest provided during upload")
+		klog.Errorf("invalid request: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
 
 	if err := b.storage.PutBlob(repo, img, expdgst, fp); err != nil {
+		klog.Errorf("error commiting blob to storage: %s", err)
 		ErrInternal(err).Write(resp)
 	}
+	klog.Infof("new blob upload %s/%s@%s", repo, img, expdgst)
 	resp.WriteHeader(http.StatusCreated)
 }
 
@@ -148,7 +172,7 @@ func (b *BlobHandler) ServeHTTP(resp http.ResponseWriter, request Request) {
 	case request.IsGet():
 		b.Get(resp, request)
 	case request.HasBlobUploadID():
-		b.StoreBlob(resp, request)
+		b.UploadBlob(resp, request)
 	case request.IsBlobUploadRequest():
 		b.StartBlobUpload(resp, request)
 	default:

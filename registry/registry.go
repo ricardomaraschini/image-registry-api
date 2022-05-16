@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
+	"time"
 
 	"k8s.io/klog"
 )
@@ -18,14 +20,23 @@ type Authorizer interface {
 	Authorize(context.Context, Request) *Error
 }
 
+// EventHandler is implmemented by any entity observing events in the registry.
+type EventHandler interface {
+	NewTag(context.Context, string, string, string) error
+}
+
 // Registry is our middleware to access the backend registry. This object implements an http
 // Handler and dispatches all received requests directly to our backend registry. This entity
 // also manages users authentication.
 type Registry struct {
-	srvaddr string
-	blobhdr *BlobHandler
-	manfhdr *ManifestHandler
-	authzer Authorizer
+	externaladdr string
+	blobhdr      *BlobHandler
+	manfhdr      *ManifestHandler
+	authzer      Authorizer
+	certpath     string
+	keypath      string
+	bind         string
+	evthandler   EventHandler
 }
 
 // redirectToAuth redirect the client do the authentication endpoint by means of setting the
@@ -38,8 +49,8 @@ func (r *Registry) redirectToAuth(resp http.ResponseWriter, request Request) {
 		return
 	}
 
-	realm := fmt.Sprintf("https://%s/v2/auth", r.srvaddr)
-	authdr := fmt.Sprintf("bearer realm=\"%s\",service=\"%s\"", realm, r.srvaddr)
+	realm := fmt.Sprintf("https://%s/v2/auth", r.externaladdr)
+	authdr := fmt.Sprintf("bearer realm=\"%s\",service=\"%s\"", realm, r.externaladdr)
 	resp.Header().Add("www-authenticate", authdr)
 	resp.WriteHeader(http.StatusUnauthorized)
 }
@@ -52,12 +63,13 @@ func (r *Registry) authenticate(resp http.ResponseWriter, request Request) {
 	token, err := r.authzer.Authenticate(request.Context(), request)
 	if err != nil {
 		err.Write(resp)
+		klog.Errorf("unable to authenticate user: %q", err.Message)
 		return
 	}
 
 	content := map[string]string{"token": token}
 	if err := json.NewEncoder(resp).Encode(content); err != nil {
-		klog.Errorf("error encoding token: %s", err)
+		klog.Errorf("error encoding token: %q", err)
 	}
 }
 
@@ -75,6 +87,7 @@ func (r *Registry) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	}
 	if err := r.authzer.Authorize(request.Context(), request); err != nil {
 		err.Write(resp)
+		klog.Errorf("unable to authorize token: %q", err.Message)
 		return
 	}
 	if request.IsBlob() {
@@ -88,13 +101,52 @@ func (r *Registry) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	ErrUnsupported.Write(resp)
 }
 
-// New returns a http handler for our image registry requests.
-func New(auth Authorizer) http.Handler {
-	sthandler := NewStorageHandler()
-	return &Registry{
-		srvaddr: "localhost:8080",
-		blobhdr: NewBlobHandler(sthandler),
-		manfhdr: NewManifestHandler(sthandler),
-		authzer: auth,
+// Start puts the metrics http server online.
+func (r *Registry) Start(ctx context.Context) error {
+	server := &http.Server{
+		Addr:    r.bind,
+		Handler: r,
 	}
+
+	go func() {
+		<-ctx.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			klog.Errorf("error shutting down https server: %s", err)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go r.blobhdr.upload.gc(ctx, &wg)
+
+	if err := server.ListenAndServeTLS("certs/server.crt", "certs/server.key"); err != nil {
+		wg.Wait()
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	}
+	wg.Wait()
+	return nil
+}
+
+// New returns a http handler for our image registry requests.
+func New(auth Authorizer, opts ...Option) *Registry {
+	sthandler := NewStorageHandler()
+	registry := &Registry{
+		bind:         ":8080",
+		externaladdr: "localhost:8080",
+		certpath:     "certs/server.crt",
+		keypath:      "certs/server.key",
+		blobhdr:      NewBlobHandler(sthandler),
+		manfhdr:      NewManifestHandler(sthandler),
+		authzer:      auth,
+	}
+
+	for _, opt := range opts {
+		opt(registry)
+	}
+	return registry
 }

@@ -134,6 +134,11 @@ func (r *Request) IsPut() bool {
 	return r.Request.Method == http.MethodPut
 }
 
+// IsDelete returns true if this is an http.MethodDelete request.
+func (r *Request) IsDelete() bool {
+	return r.Request.Method == http.MethodDelete
+}
+
 // HasBlobUploadID returns true if the url contains an upload identification, this generally
 // means that a client is uploading blob data.
 func (r *Request) HasBlobUploadID() bool {

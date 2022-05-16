@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/containers/image/v5/manifest"
+	"k8s.io/klog"
 )
 
 // ManifestTag is used when storing a manifest tag in our storage layer.
@@ -21,7 +22,8 @@ type ManifestTag struct {
 
 // ManifestHandler handles all manifest related operations.
 type ManifestHandler struct {
-	storage *StorageHandler
+	storage    *StorageHandler
+	evthandler EventHandler
 }
 
 // StoreManifest stores a manifest in our underlying storage.
@@ -29,6 +31,7 @@ func (m *ManifestHandler) StoreManifest(resp http.ResponseWriter, request Reques
 	manid := request.ManifestID()
 	repo, image, err := request.RepositoryAndImage()
 	if err != nil {
+		klog.Errorf("error parsing repo/image: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -37,24 +40,39 @@ func (m *ManifestHandler) StoreManifest(resp http.ResponseWriter, request Reques
 	buf := bytes.NewBuffer(nil)
 	to := io.MultiWriter(buf, hasher)
 	if _, err := io.Copy(to, request.Body); err != nil {
+		klog.Errorf("error copying manifest blob: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
 
 	hash := fmt.Sprintf("sha256:%x", hasher.Sum(nil))
 	if err := m.storage.PutBlob(repo, image, hash, buf); err != nil {
+		klog.Errorf("error saving manifest blob: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
 
 	if strings.HasPrefix(manid, "sha256:") {
+		klog.Infof("new manifest upload %s/%s@%s", repo, image, manid)
 		resp.WriteHeader(http.StatusCreated)
 		return
 	}
 
 	if err := m.storage.PutTag(repo, image, manid, hash); err != nil {
+		klog.Errorf("error saving manifest tag file: %s", err)
 		ErrInternal(err).Write(resp)
+		return
 	}
+
+	if m.evthandler != nil {
+		err := m.evthandler.NewTag(request.Context(), repo, image, manid)
+		if err != nil {
+			klog.Errorf("event handler failed: %s", err)
+			ErrInternal(err).Write(resp)
+			return
+		}
+	}
+	klog.Infof("new manifest tag upload %s/%s:%s", repo, image, manid)
 	resp.WriteHeader(http.StatusCreated)
 }
 
@@ -64,6 +82,7 @@ func (m *ManifestHandler) GetManifest(resp http.ResponseWriter, request Request)
 	manid := request.ManifestID()
 	repo, image, err := request.RepositoryAndImage()
 	if err != nil {
+		klog.Errorf("error parsing image/repo for upload: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -81,6 +100,7 @@ func (m *ManifestHandler) GetManifest(resp http.ResponseWriter, request Request)
 			ErrUnknownManifest.Write(resp)
 			return
 		}
+		klog.Errorf("error getting manifest blob: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -88,6 +108,7 @@ func (m *ManifestHandler) GetManifest(resp http.ResponseWriter, request Request)
 
 	mandata, err := io.ReadAll(manread)
 	if err != nil {
+		klog.Errorf("error reading manifest blob: %s", err)
 		ErrInternal(err).Write(resp)
 		return
 	}
@@ -112,5 +133,7 @@ func (m *ManifestHandler) ServeHTTP(resp http.ResponseWriter, request Request) {
 
 // NewManifestHandler returns a new http handler manifest related operations.
 func NewManifestHandler(handler *StorageHandler) *ManifestHandler {
-	return &ManifestHandler{storage: handler}
+	return &ManifestHandler{
+		storage: handler,
+	}
 }

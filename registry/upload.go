@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -9,9 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog"
-
 	"github.com/google/uuid"
+	"k8s.io/klog"
 )
 
 // tmpFileWrapper wraps an os.File reference and provide tooling around deleting the temporary
@@ -35,45 +35,54 @@ type UploadHandler struct {
 	basedir string
 }
 
-// gc collects inactive upload ids and deletes their underlying files as soon as they expire, gc
-// stands for garbage collection. This function also inspects the basedir for files that have no
-// more active references (left overs) and removes them.
-func (u *UploadHandler) gc() {
-	ticker := time.NewTicker(time.Minute)
-	for range ticker.C {
-		u.Lock()
-		for id, deadline := range u.active {
-			if deadline.After(time.Now()) {
-				continue
-			}
+// clean remove dangling upload files from disk. Upload files are removed if their reference
+// is too old or non existent.
+func (u *UploadHandler) clean() {
+	u.Lock()
+	defer u.Unlock()
 
-			fpath := u.tmpFileForUpload(id)
-			if err := os.RemoveAll(fpath); err != nil {
-				klog.Errorf("unable to delete upload file: %s", err)
-			}
-			delete(u.active, id)
-		}
-
-		files, err := os.ReadDir(u.basedir)
-		if err != nil {
-			klog.Errorf("unable to list upload files: %s", err)
-			u.Unlock()
+	for id, deadline := range u.active {
+		if deadline.After(time.Now()) {
 			continue
 		}
 
-		for _, file := range files {
-			id := u.idForUploadFile(file.Name())
-			if _, ok := u.active[id]; ok {
-				continue
-			}
+		fpath := u.tmpFileForUpload(id)
+		if err := os.RemoveAll(fpath); err != nil {
+			klog.Errorf("unable to delete upload file: %s", err)
+		}
+		delete(u.active, id)
+	}
 
-			fpath := fmt.Sprintf("%s/%s", u.basedir, file.Name())
-			if err := os.RemoveAll(fpath); err != nil {
-				klog.Errorf("unable to delete upload file: %s", err)
-			}
+	files, err := os.ReadDir(u.basedir)
+	if err != nil {
+		klog.Errorf("unable to list upload files: %s", err)
+		return
+	}
+
+	for _, file := range files {
+		id := u.idForUploadFile(file.Name())
+		if _, ok := u.active[id]; ok {
+			continue
 		}
 
-		u.Unlock()
+		fpath := fmt.Sprintf("%s/%s", u.basedir, file.Name())
+		if err := os.RemoveAll(fpath); err != nil {
+			klog.Errorf("unable to delete upload file: %s", err)
+		}
+	}
+}
+
+// gc collects inactive upload ids and deletes their underlying files as soon as they expire, gc
+// stands for garbage collection. This function also inspects the basedir for files that have no
+// more active references (left overs) and removes them.
+func (u *UploadHandler) gc(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	ticker := time.NewTicker(time.Minute)
+	select {
+	case <-ctx.Done():
+		return
+	case <-ticker.C:
+		u.clean()
 	}
 }
 
@@ -120,6 +129,16 @@ func (u *UploadHandler) isValid(id string) error {
 // tmpFileForUpload returns a tmp file path for the provided upload id.
 func (u *UploadHandler) tmpFileForUpload(id string) string {
 	return fmt.Sprintf("%s/%s.tmp", u.basedir, id)
+}
+
+// Delete deletes an active upload by its id.
+func (u *UploadHandler) Delete(id string) {
+	u.Lock()
+	defer u.Unlock()
+
+	fpath := u.tmpFileForUpload(id)
+	_ = os.RemoveAll(fpath)
+	delete(u.active, id)
 }
 
 // Append appends the provided Reader to the underlying upload under the provide id. Returns
@@ -172,6 +191,5 @@ func NewUploadHandler() *UploadHandler {
 		active:  map[string]time.Time{},
 		basedir: "/tmp/uploads",
 	}
-	go u.gc()
 	return u
 }
